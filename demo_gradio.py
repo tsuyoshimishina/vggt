@@ -70,26 +70,52 @@ def run_model(target_dir, model) -> dict:
     print("Running inference...")
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
+    # Reset peak memory stats before inference
+    torch.cuda.reset_peak_memory_stats(device)
+    
+    inference_start = time.time()
     with torch.no_grad():
         with torch.cuda.amp.autocast(dtype=dtype):
             predictions = model(images)
+    inference_end = time.time()
+    
+    # Get memory usage statistics
+    peak_memory_allocated = torch.cuda.max_memory_allocated(device) / (1024**3)  # GB
+    peak_memory_reserved = torch.cuda.max_memory_reserved(device) / (1024**3)    # GB
+    current_memory_allocated = torch.cuda.memory_allocated(device) / (1024**3)   # GB
+    current_memory_reserved = torch.cuda.memory_reserved(device) / (1024**3)     # GB
+    
+    print(f"Inference time: {inference_end - inference_start:.3f} seconds")
+    print(f"Peak GPU memory allocated: {peak_memory_allocated:.2f} GB")
+    print(f"Peak GPU memory reserved: {peak_memory_reserved:.2f} GB") 
+    print(f"Current GPU memory allocated: {current_memory_allocated:.2f} GB")
+    print(f"Current GPU memory reserved: {current_memory_reserved:.2f} GB")
 
     # Convert pose encoding to extrinsic and intrinsic matrices
     print("Converting pose encoding to extrinsic and intrinsic matrices...")
+    pose_convert_start = time.time()
     extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
+    pose_convert_end = time.time()
+    print(f"Pose encoding conversion time: {pose_convert_end - pose_convert_start:.3f} seconds")
     predictions["extrinsic"] = extrinsic
     predictions["intrinsic"] = intrinsic
 
     # Convert tensors to numpy
+    tensor_convert_start = time.time()
     for key in predictions.keys():
         if isinstance(predictions[key], torch.Tensor):
             predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension
+    tensor_convert_end = time.time()
+    print(f"Tensor to numpy conversion time: {tensor_convert_end - tensor_convert_start:.3f} seconds")
     predictions['pose_enc_list'] = None # remove pose_enc_list
 
     # Generate world points from depth map
     print("Computing world points from depth map...")
+    world_points_start = time.time()
     depth_map = predictions["depth"]  # (S, H, W, 1)
     world_points = unproject_depth_map_to_point_map(depth_map, predictions["extrinsic"], predictions["intrinsic"])
+    world_points_end = time.time()
+    print(f"World points computation time: {world_points_end - world_points_start:.3f} seconds")
     predictions["world_points_from_depth"] = world_points
 
     # Clean up
@@ -228,6 +254,7 @@ def gradio_demo(
     )
 
     # Convert predictions to GLB
+    glb_start = time.time()
     glbscene = predictions_to_glb(
         predictions,
         conf_thres=conf_thres,
@@ -240,6 +267,8 @@ def gradio_demo(
         prediction_mode=prediction_mode,
     )
     glbscene.export(file_obj=glbfile)
+    glb_end = time.time()
+    print(f"GLB generation and export time: {glb_end - glb_start:.3f} seconds")
 
     # Cleanup
     del predictions
