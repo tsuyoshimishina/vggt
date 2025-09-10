@@ -15,6 +15,7 @@ from datetime import datetime
 import glob
 import gc
 import time
+from scipy.spatial.transform import Rotation as R
 
 sys.path.append("vggt/")
 
@@ -121,6 +122,70 @@ def run_model(target_dir, model) -> dict:
     # Clean up
     torch.cuda.empty_cache()
     return predictions
+
+
+def export_camera_parameters(predictions, target_dir):
+    """
+    Export VGGT camera parameters to CSV format.
+    
+    Args:
+        predictions (dict): Dictionary containing model predictions
+        target_dir (str): Output directory
+        
+    Returns:
+        str: Path to the camera parameters CSV file
+    """
+    try:
+        # Get predictions
+        extrinsic = predictions["extrinsic"]  # (S, 3, 4)
+        intrinsic = predictions["intrinsic"]  # (S, 3, 3)
+        
+        S = extrinsic.shape[0]  # Number of frames
+        
+        # Get image filenames
+        target_dir_images = os.path.join(target_dir, "images")
+        image_files = sorted(os.listdir(target_dir_images)) if os.path.isdir(target_dir_images) else []
+        
+        # Create CSV output
+        csv_path = os.path.join(target_dir, "camera_parameters.csv")
+        
+        with open(csv_path, 'w') as f:
+            # Write header
+            f.write("frame_id,image_name,fx,fy,cx,cy,")
+            f.write("x,y,z,qx,qy,qz,qw\n")
+            
+            # Write data for each frame
+            for i in range(S):
+                # Image filename (use index if available, otherwise generic name)
+                image_name = image_files[i] if i < len(image_files) else f"image_{i}.jpg"
+                
+                # Intrinsic parameters
+                fx = intrinsic[i, 0, 0]
+                fy = intrinsic[i, 1, 1] 
+                cx = intrinsic[i, 0, 2]
+                cy = intrinsic[i, 1, 2]
+                
+                # Extrinsic parameters (3x4 matrix)
+                ext = extrinsic[i]
+                
+                # Extract rotation matrix and translation vector
+                rotation_matrix = ext[:3, :3]  # 3x3 rotation matrix
+                translation = ext[:3, 3]      # 3x1 translation vector
+                
+                # Convert rotation matrix to quaternion using scipy
+                rotation = R.from_matrix(rotation_matrix)
+                quaternion = rotation.as_quat()  # returns [x, y, z, w]
+                
+                # Write row
+                f.write(f"{i},{image_name},{fx:.6f},{fy:.6f},{cx:.6f},{cy:.6f},")
+                f.write(f"{translation[0]:.6f},{translation[1]:.6f},{translation[2]:.6f},")
+                f.write(f"{quaternion[0]:.6f},{quaternion[1]:.6f},{quaternion[2]:.6f},{quaternion[3]:.6f}\n")
+        
+        return csv_path
+        
+    except Exception as e:
+        print(f"Error exporting camera parameters: {str(e)}")
+        return None
 
 
 # -------------------------------------------------------------------------
@@ -486,6 +551,7 @@ with gr.Blocks(
 
             with gr.Row():
                 submit_btn = gr.Button("Reconstruct", scale=1, variant="primary")
+                export_camera_btn = gr.Button("Export Camera Parameters", scale=1, variant="secondary")
                 clear_btn = gr.ClearButton(
                     [input_video, input_images, reconstruction_output, log_output, target_dir_output, image_gallery],
                     scale=1,
@@ -701,6 +767,39 @@ with gr.Blocks(
             is_example,
         ],
         [reconstruction_output, log_output],
+    )
+    
+    # -------------------------------------------------------------------------
+    # Camera parameters export functionality
+    # -------------------------------------------------------------------------
+    def handle_camera_export(target_dir):
+        """Handle camera parameters export button click"""
+        if target_dir == "None" or target_dir is None:
+            return "❌ Please run reconstruction first before exporting camera parameters."
+        
+        try:
+            # Load saved predictions
+            npz_path = os.path.join(target_dir, "predictions.npz")
+            if not os.path.exists(npz_path):
+                return "❌ No predictions found. Please run reconstruction first."
+            
+            predictions = dict(np.load(npz_path, allow_pickle=True))
+            
+            # Export camera parameters to CSV
+            csv_path = export_camera_parameters(predictions, target_dir)
+            
+            if csv_path:
+                return f"✅ Camera parameters exported successfully to: {csv_path}\nColumns: frame_id, image_name, fx, fy, cx, cy, x, y, z, qx, qy, qz, qw"
+            else:
+                return "❌ Failed to export camera parameters. Check console for details."
+                
+        except Exception as e:
+            return f"❌ Error during camera export: {str(e)}"
+    
+    export_camera_btn.click(
+        handle_camera_export,
+        [target_dir_output],
+        [log_output]
     )
 
     # -------------------------------------------------------------------------
