@@ -138,7 +138,10 @@ def predictions_to_glb(
         pred_world_points = pred_world_points[selected_frame_idx][None]
         pred_world_points_conf = pred_world_points_conf[selected_frame_idx][None]
         images = images[selected_frame_idx][None]
-        camera_matrices = camera_matrices[selected_frame_idx][None]
+        # Keep all camera matrices to ensure alignment to Camera 0's coordinate system
+        # If we filter camera_matrices here, apply_scene_alignment() would align to the selected frame's coordinate system
+        # rather than consistently aligning to Camera 0
+        # camera_matrices = camera_matrices[selected_frame_idx][None]
 
     vertices_3d = pred_world_points.reshape(-1, 3)
     # Handle different image formats - check if images need transposing
